@@ -1,0 +1,83 @@
+/* stylelint-disable-next-line at-rule-no-unknown */
+@tailwind base;
+/* stylelint-disable-next-line at-rule-no-unknown */
+@tailwind components;
+/* stylelint-disable-next-line at-rule-no-unknown */
+@tailwind utilities;
+
+@font-face {
+    font-family: "burtons";
+    src: url("../assets/fonts/Burtons.otf") format('opentype');
+    font-weight: normal;
+    font-style: normal;
+}
+
+.card-header {
+    padding: 10px;
+    margin: 13px;
+    border: outset black;
+    border-bottom-color: aliceblue;
+    box-shadow: cyan 2px 2px 2px 2px;
+}
+
+.button-style {
+    background-color: lightblue;
+    height: 35px;
+    width: 75px;
+    box-shadow: cyan 2px 1px 1px 2px;
+    float: right;
+    color: white;
+}
+
+.animate-move {
+    width: 30px;
+    height: 30px;
+    position: absolute;
+    border-radius: 100%;
+    animation-name: example;
+    animation-duration: 20s;
+}
+
+@keyframes example {
+    0%   {background-color:cyan; left:0; top:0;}
+    25%  {background-color: red; left:0; top:50px;}
+    33%  {background-color: blue; left: 50px; top:0;}
+    44%  {background-color:teal; left: 50px; top:50px;}
+    55% {background-color: white; left:0; right: 0; top:0;}
+    66% {background-color: orange; left:0; right: 50px; top:20px;}
+    77% {background-color: purple; left:0; right: 100px; top:0;}
+    88% {background-color: lightblue; left:0; right: 200px; top:100px;}
+    100% {background-color: cyan; left:50px; top:20px;}
+}
+
+/* Landing Page Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fadeIn {
+    animation: fadeIn 0.8s ease-out forwards;
+}
+
+.animate-fadeInUp {
+    animation: fadeInUp 0.6s ease-out forwards;
+    opacity: 0;
+}
