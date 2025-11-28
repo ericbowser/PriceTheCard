@@ -4,7 +4,6 @@
 async function searchCards(cardName, exact = false) {
   try {
     const headers = {
-      'User-Agent': 'PriceTheCard/1.0',
       'Accept': 'application/json;q=0.9,*/*;q=0.8'
     };
     const encodedName = encodeURIComponent(cardName);
@@ -39,7 +38,6 @@ async function searchCards(cardName, exact = false) {
 async function getCardImage(cardName) {
   try {
     const headers = {
-      'User-Agent': 'PriceTheCard/1.0',
       'Accept': 'application/json;q=0.9,*/*;q=0.8'
     };
     const response = await axios.get(`https://api.scryfall.com/cards/image/${cardName}`, {headers});
