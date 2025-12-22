@@ -14,7 +14,13 @@ export default defineConfig({
   },
   server: {
     port: env.PORT || 3000,
-    host: 'localhost'
+    host: 'localhost',
+    open: {
+      app: {
+        name: process.platform === 'win32' ? 'chrome' : 'google-chrome',
+        arguments: ['--new-window']
+      }
+    }
   },
   css: {
     postcss: {

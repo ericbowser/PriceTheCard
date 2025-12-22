@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "axios": "^1.10.0",
-    "gmail-send": "^1.8.14",
     "google-auth-library": "^9.15.1",
     "googleapis": "^148.0.0",
     "react": "^18",
