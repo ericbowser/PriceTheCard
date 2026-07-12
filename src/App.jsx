@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
-import { searchCards } from "../api/scryfall.js";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { searchCards, getCardsByIds } from "../api/scryfall.js";
 
 const App = () => {
   const [cardName, setCardName] = useState("");
@@ -10,6 +10,7 @@ const App = () => {
   const [library, setLibrary] = useState([]);
   const [quantity, setQuantity] = useState(1);
   const [showLibrary, setShowLibrary] = useState(false);
+  const [selectedSet, setSelectedSet] = useState(null);
   const [filterQuery, setFilterQuery] = useState("");
   const [isFoil, setIsFoil] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
@@ -219,6 +220,12 @@ const App = () => {
       if (!updatedLibrary[existingIndex].collector_number && cardToAdd.collector_number) {
         updatedLibrary[existingIndex].collector_number = cardToAdd.collector_number;
       }
+      if (!updatedLibrary[existingIndex].set_code && cardToAdd.set) {
+        updatedLibrary[existingIndex].set_code = cardToAdd.set;
+      }
+      if (!updatedLibrary[existingIndex].releasedAt && cardToAdd.released_at) {
+        updatedLibrary[existingIndex].releasedAt = cardToAdd.released_at;
+      }
       console.log('Updated existing card:', updatedLibrary[existingIndex]);
       setLibrary(updatedLibrary);
       setSuccessMessage(`Updated ${cardToAdd.name} (now ${updatedLibrary[existingIndex].quantity}x)`);
@@ -234,6 +241,7 @@ const App = () => {
         id: cardToAdd.id || `card-${Date.now()}-${Math.random()}`,
         name: cardToAdd.name,
         set_name: cardToAdd.set_name || cardToAdd.set || '',
+        set_code: cardToAdd.set || '',
         collector_number: cardToAdd.collector_number || '',
         image_uris: cardToAdd.image_uris || cardToAdd.card_faces?.[0]?.image_uris || {},
         price: price,
@@ -241,6 +249,7 @@ const App = () => {
         totalValue: quantity * price,
         scryfall_id: cardToAdd.id || '',
         isFoil: isFoil,
+        releasedAt: cardToAdd.released_at || '',
         dateAdded: new Date().toISOString()
       };
       console.log('Adding new card:', newItem);
@@ -288,6 +297,97 @@ const App = () => {
 
   const calculateTotalValue = () => {
     return library.reduce((sum, item) => sum + item.totalValue, 0).toFixed(2);
+  };
+
+  // Group library items by set, sorted newest set first (unknown release dates sink to the bottom)
+  const librarySets = useMemo(() => {
+    const groups = {};
+    library.forEach(item => {
+      const key = item.set_name || 'Unknown Set';
+      if (!groups[key]) {
+        groups[key] = { setName: key, items: [], releasedAt: '', setCode: '' };
+      }
+      groups[key].items.push(item);
+      if (item.releasedAt && item.releasedAt > groups[key].releasedAt) {
+        groups[key].releasedAt = item.releasedAt;
+      }
+      if (!groups[key].setCode && item.set_code) {
+        groups[key].setCode = item.set_code;
+      }
+    });
+
+    const groupList = Object.values(groups).map(g => ({
+      setName: g.setName,
+      setCode: g.setCode,
+      releasedAt: g.releasedAt,
+      cardCount: g.items.length,
+      totalQuantity: g.items.reduce((sum, i) => sum + (i.quantity || 0), 0),
+      totalValue: g.items.reduce((sum, i) => sum + (i.totalValue || 0), 0),
+      thumbnail: g.items.find(i => i.image_uris?.normal)?.image_uris?.normal || null,
+    }));
+
+    groupList.sort((a, b) => {
+      if (!a.releasedAt && !b.releasedAt) return a.setName.localeCompare(b.setName);
+      if (!a.releasedAt) return 1;
+      if (!b.releasedAt) return -1;
+      return b.releasedAt.localeCompare(a.releasedAt);
+    });
+
+    return groupList;
+  }, [library]);
+
+  // Format a release date like "2019-08-23" as "Aug 2019"
+  const formatSetDate = (dateStr) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  };
+
+  // Merge freshly-fetched Scryfall card data (image + release date) into matching library items
+  const mergeCardData = (cardMap) => {
+    if (!cardMap || Object.keys(cardMap).length === 0) return;
+    setLibrary(prev => prev.map(item => {
+      const card = item.scryfall_id && cardMap[item.scryfall_id];
+      if (!card) return item;
+      const normal = card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || '';
+      const small = card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || normal;
+      return {
+        ...item,
+        image_uris: normal ? { normal, small } : item.image_uris,
+        releasedAt: item.releasedAt || card.released_at || '',
+      };
+    }));
+  };
+
+  // Preload: make sure every set tile has at least one thumbnail image, fetched lazily
+  // (only for sets that don't already have one - stops once every tile has an image)
+  useEffect(() => {
+    const idsToFetch = librarySets
+        .filter(s => !s.thumbnail)
+        .map(s => library.find(i => (i.set_name || 'Unknown Set') === s.setName && i.scryfall_id)?.scryfall_id)
+        .filter(Boolean);
+
+    if (idsToFetch.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const cardMap = await getCardsByIds(idsToFetch);
+      if (!cancelled) mergeCardData(cardMap);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [librarySets]);
+
+  // Open a set and backfill images for any cards in it that don't have one yet
+  const openSet = async (setName) => {
+    setSelectedSet(setName);
+    const idsToFetch = library
+        .filter(item => (item.set_name || 'Unknown Set') === setName && item.scryfall_id && !item.image_uris?.normal)
+        .map(item => item.scryfall_id);
+    if (idsToFetch.length > 0) {
+      const cardMap = await getCardsByIds(idsToFetch);
+      mergeCardData(cardMap);
+    }
   };
 
   // Fuzzy search function to filter cards by name and set
@@ -370,6 +470,9 @@ const App = () => {
         const totalValueIndex = findColumn(['total', 'total value', 'totalvalue', 'total_value', 'total $']);
         const foilIndex = findColumn(['foil', 'isFoil', 'is_foil', 'foil?']);
         const scryfallIdIndex = findColumn(['scryfall', 'scryfall_id', 'scryfall id', 'id']);
+        const releasedAtIndex = findColumn(['released at', 'released_at', 'release date']);
+        const imageUrlIndex = findColumn(['image url', 'image_url', 'image']);
+        const setCodeIndex = findColumn(['set code', 'set_code', 'setcode']);
 
         if (nameIndex === -1) {
           setError("Could not find 'Name' column in CSV. Please check the file format.");
@@ -412,6 +515,9 @@ const App = () => {
           const quantity = quantityIndex >= 0 ? parseInt(values[quantityIndex]) || 1 : 1;
           const scryfall_id = scryfallIdIndex >= 0 ? (values[scryfallIdIndex] || '') : '';
           const isFoilImport = foilIndex >= 0 ? (values[foilIndex]?.toLowerCase() === 'yes' || values[foilIndex]?.toLowerCase() === 'true' || values[foilIndex] === '1') : false;
+          const releasedAt = releasedAtIndex >= 0 ? (values[releasedAtIndex] || '') : '';
+          const imageUrl = imageUrlIndex >= 0 ? (values[imageUrlIndex] || '') : '';
+          const set_code = setCodeIndex >= 0 ? (values[setCodeIndex] || '') : '';
 
           // Parse price and total value
           let price = priceIndex >= 0 ? parsePrice(values[priceIndex]) : 0;
@@ -436,13 +542,15 @@ const App = () => {
             id: scryfall_id || `imported-${i}-${Date.now()}`,
             name: name,
             set_name: set_name,
+            set_code: set_code,
             collector_number: collector_number,
             price: price,
             quantity: quantity,
             totalValue: totalValue,
             scryfall_id: scryfall_id,
             isFoil: isFoilImport,
-            image_uris: {}, // Will be populated if card is found via Scryfall later
+            image_uris: imageUrl ? { normal: imageUrl, small: imageUrl.replace('/normal/', '/small/') } : {},
+            releasedAt: releasedAt,
             dateAdded: new Date().toISOString() // Timestamp for sorting
           };
 
@@ -450,8 +558,9 @@ const App = () => {
           const existingIndex = findCardIndex(importedLibrary, importedCard);
 
           if (existingIndex >= 0) {
-            // Merge: update quantity and total value
-            importedLibrary[existingIndex].quantity += quantity;
+            // Sync: the imported file is the source of truth, so overwrite rather than add.
+            // (Re-importing the same export previously doubled quantities here.)
+            importedLibrary[existingIndex].quantity = quantity;
             // Update price if the imported one is available (prefer imported price if it's non-zero)
             if (price > 0) {
               importedLibrary[existingIndex].price = price;
@@ -460,6 +569,16 @@ const App = () => {
             importedLibrary[existingIndex].totalValue = importedLibrary[existingIndex].quantity * importedLibrary[existingIndex].price;
             // Update timestamp to reflect most recent import
             importedLibrary[existingIndex].dateAdded = new Date().toISOString();
+            // Fill in release date / image if this row has them and the existing entry doesn't
+            if (releasedAt && !importedLibrary[existingIndex].releasedAt) {
+              importedLibrary[existingIndex].releasedAt = releasedAt;
+            }
+            if (imageUrl && (!importedLibrary[existingIndex].image_uris || Object.keys(importedLibrary[existingIndex].image_uris).length === 0)) {
+              importedLibrary[existingIndex].image_uris = { normal: imageUrl, small: imageUrl.replace('/normal/', '/small/') };
+            }
+            if (set_code && !importedLibrary[existingIndex].set_code) {
+              importedLibrary[existingIndex].set_code = set_code;
+            }
           } else {
             // Add new card - ensure totalValue is calculated
             if (importedCard.totalValue === 0 && importedCard.price > 0) {
@@ -469,9 +588,11 @@ const App = () => {
           }
         }
 
-        // Post-process: Ensure all totalValues are correctly calculated
+        // Post-process: Fill in totalValue only where it's missing - never clobber an
+        // exact value that was already parsed from the file (e.g. multiple copies bought
+        // at different prices won't reconstruct correctly from price * quantity alone)
         importedLibrary.forEach(item => {
-          if (item.price !== undefined && item.quantity !== undefined) {
+          if ((item.totalValue === undefined || item.totalValue === null || isNaN(item.totalValue)) && item.price !== undefined && item.quantity !== undefined) {
             item.totalValue = item.price * item.quantity;
           }
         });
@@ -498,38 +619,38 @@ const App = () => {
   };
 
   return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
+      <div className="min-h-screen bg-parchment dark:bg-ink py-8 px-4">
         <div className="max-w-6xl mx-auto">
-          <h1 className="text-4xl font-bold text-center mb-2 text-gray-900 dark:text-white">
+          <h1 className="text-4xl font-bold text-center mb-2 text-white">
             MTG Collection Manager
           </h1>
-          <p className="text-center text-gray-600 dark:text-gray-400 mb-6">
+          <p className="text-center text-white/70 mb-6">
             Quick MTG Collection Pricing - No Login Required
           </p>
 
           {/* Success Message */}
           {successMessage && (
-              <div className="mb-6 p-4 bg-green-100 dark:bg-green-900/30 border border-green-400 dark:border-green-600 
-                        text-green-700 dark:text-green-400 rounded-lg">
+              <div className="mb-6 p-4 bg-ledger/10 dark:bg-ledger/20 border border-ledger 
+                        text-ledger rounded-lg">
                 <p className="font-medium">✓ {successMessage}</p>
               </div>
           )}
 
           {/* Library Summary Bar */}
-          <div className="mb-6 flex justify-between items-center bg-white dark:bg-gray-800 rounded-lg shadow-md p-4">
+          <div className="mb-6 flex justify-between items-center bg-white dark:bg-ink-light rounded-lg shadow-md p-4">
             <div className="flex gap-4 items-center">
               <button
                   onClick={() => setShowLibrary(!showLibrary)}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                  className="px-4 py-2 bg-ink/10 dark:bg-white/10 hover:bg-ink/20 dark:hover:bg-white/20 text-ink dark:text-white rounded-lg font-medium transition-colors"
               >
                 {showLibrary ? 'Hide' : 'Show'} Library ({library.length})
               </button>
-              <span className="text-lg font-semibold text-gray-900 dark:text-white">
+              <span className="text-lg font-semibold text-ledger">
               Total Value: ${calculateTotalValue()}
             </span>
             </div>
             <div className="flex gap-2">
-              <label className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors cursor-pointer">
+              <label className="px-4 py-2 bg-ink/10 dark:bg-white/10 hover:bg-ink/20 dark:hover:bg-white/20 text-ink dark:text-white rounded-lg font-medium transition-colors cursor-pointer">
                 Import CSV
                 <input
                     type="file"
@@ -541,7 +662,7 @@ const App = () => {
               <button
                   onClick={exportToCSV}
                   disabled={library.length === 0}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
+                  className="px-4 py-2 bg-ink/10 dark:bg-white/10 hover:bg-ink/20 dark:hover:bg-white/20 disabled:opacity-40 text-ink dark:text-white rounded-lg font-medium transition-colors"
               >
                 Export CSV
               </button>
@@ -557,27 +678,27 @@ const App = () => {
                   onChange={(e) => setCardName(e.target.value)}
                   placeholder="Enter card name (e.g., Lightning Bolt) - Press Ctrl/Cmd+K to focus"
                   className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
-                       bg-white dark:bg-gray-800 text-gray-900 dark:text-white
-                       focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       bg-white dark:bg-ink-light text-white
+                       focus:outline-none focus:ring-2 focus:ring-foil"
                   disabled={loading}
               />
               <button
                   type="submit"
                   disabled={loading || !cardName.trim()}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 
-                       text-white rounded-lg font-medium transition-colors
-                       focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="px-6 py-2 bg-ink hover:bg-ink-light disabled:bg-gray-400 
+                       text-parchment rounded-lg font-medium transition-colors
+                       focus:outline-none focus:ring-2 focus:ring-foil"
               >
                 {loading ? "Searching..." : "Search"}
               </button>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+            <p className="text-xs text-white/60 mt-2">
               Tip: Press Ctrl/Cmd+K to quickly focus search • Esc to clear
             </p>
           </form>
 
           {selectedCard && (
-              <div ref={selectedCardRef} className="mb-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+              <div ref={selectedCardRef} className="mb-6 bg-white dark:bg-ink-light rounded-lg shadow-lg p-6">
                 <div className="grid md:grid-cols-2 gap-6">
                   {selectedCard.image_uris?.normal && (
                       <div>
@@ -589,31 +710,31 @@ const App = () => {
                       </div>
                   )}
                   <div>
-                    <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">
+                    <h2 className="text-2xl font-bold mb-4 text-white">
                       {selectedCard.name}
                     </h2>
                     {selectedCard.mana_cost && (
-                        <p className="text-lg mb-2 text-gray-700 dark:text-gray-300">
+                        <p className="text-lg mb-2 text-white">
                           <span className="font-semibold">Mana Cost:</span> {selectedCard.mana_cost}
                         </p>
                     )}
                     {selectedCard.type_line && (
-                        <p className="text-lg mb-2 text-gray-700 dark:text-gray-300">
+                        <p className="text-lg mb-2 text-white">
                           <span className="font-semibold">Type:</span> {selectedCard.type_line}
                         </p>
                     )}
                     {selectedCard.oracle_text && (
                         <div className="mb-4">
-                          <p className="font-semibold mb-2 text-gray-700 dark:text-gray-300">Oracle Text:</p>
-                          <p className="text-gray-700 dark:text-gray-300 whitespace-pre-line">
+                          <p className="font-semibold mb-2 text-white">Oracle Text:</p>
+                          <p className="text-white whitespace-pre-line">
                             {selectedCard.oracle_text}
                           </p>
                         </div>
                     )}
                     {selectedCard.prices && (
                         <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg">
-                          <p className="font-semibold mb-2 text-gray-900 dark:text-white">Prices:</p>
-                          <div className="space-y-1 text-gray-700 dark:text-gray-300">
+                          <p className="font-semibold mb-2 text-ledger">Prices:</p>
+                          <div className="space-y-1 text-ledger">
                             {selectedCard.prices.usd && (
                                 <p>USD: ${selectedCard.prices.usd}</p>
                             )}
@@ -630,18 +751,18 @@ const App = () => {
                         </div>
                     )}
                     {selectedCard.set_name && (
-                        <p className="mt-4 text-sm text-gray-600 dark:text-gray-400">
+                        <p className="mt-4 text-sm text-white/70">
                           <span className="font-semibold">Set:</span> {selectedCard.set_name}
                           {selectedCard.collector_number && ` (${selectedCard.collector_number})`}
                         </p>
                     )}
                     {selectedCard.rarity && (
-                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                        <p className="mt-2 text-sm text-white/70">
                           <span className="font-semibold">Rarity:</span> {selectedCard.rarity}
                         </p>
                     )}
                     <div className="mt-6 flex gap-4 items-center flex-wrap">
-                      <label className="text-gray-700 dark:text-gray-300 font-semibold">
+                      <label className="text-white font-semibold">
                         Quantity:
                       </label>
                       <input
@@ -650,26 +771,26 @@ const App = () => {
                           value={quantity}
                           onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
                           className="w-20 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
-                             bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                             bg-white dark:bg-ink-light text-white"
                       />
-                      <label className="flex items-center gap-2 text-gray-700 dark:text-gray-300 cursor-pointer">
+                      <label className="flex items-center gap-2 text-white cursor-pointer">
                         <input
                             type="checkbox"
                             checked={isFoil}
                             onChange={(e) => setIsFoil(e.target.checked)}
-                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            className="w-4 h-4 text-foil border-gray-300 rounded focus:ring-foil"
                         />
                         <span className="font-semibold">Foil</span>
                       </label>
                       <button
                           onClick={() => addToLibrary(selectedCard)}
-                          className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                          className="px-6 py-2 bg-foil hover:bg-foil-dark text-ink font-semibold rounded-lg transition-colors"
                       >
                         Add to Library
                       </button>
                       <button
                           onClick={() => addToLibrary(selectedCard)}
-                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                          className="px-4 py-2 bg-ink/10 dark:bg-white/10 hover:bg-ink/20 dark:hover:bg-white/20 text-ink dark:text-white rounded-lg font-medium transition-colors"
                           title="Quickly add another copy (auto-focuses search)"
                       >
                         + Add Another
@@ -681,20 +802,20 @@ const App = () => {
           )}
 
           {error && (
-              <div className="mb-6 p-4 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-600 
-                        text-red-700 dark:text-red-400 rounded-lg">
+              <div className="mb-6 p-4 bg-ember/10 dark:bg-ember/20 border border-ember 
+                        text-ember rounded-lg">
                 <p className="font-medium">Error:</p>
                 <p>{error}</p>
               </div>
           )}
 
           {cards.length > 0 && (
-              <div className="mb-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+              <div className="mb-6 bg-white dark:bg-ink-light rounded-lg shadow-lg p-6">
                 <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
+                  <h2 className="text-2xl font-semibold text-white">
                     Found {cards.length} printing{cards.length !== 1 ? 's' : ''}
                     {filterQuery && (
-                        <span className="text-lg font-normal text-gray-600 dark:text-gray-400 ml-2">
+                        <span className="text-lg font-normal text-white/70 ml-2">
                     ({filteredCards.length} matching)
                   </span>
                     )}
@@ -705,27 +826,27 @@ const App = () => {
                       onChange={(e) => setFilterQuery(e.target.value)}
                       placeholder="Filter by card name or set..."
                       className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
-                         bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                         focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+                         bg-white dark:bg-ink-light text-white
+                         focus:outline-none focus:ring-2 focus:ring-foil w-64"
                   />
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
                     <tr className="border-b-2 border-gray-300 dark:border-gray-600">
-                      <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Set</th>
-                      <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Set Name</th>
-                      <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Card Name</th>
-                      <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Collector #</th>
-                      <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Rarity</th>
-                      <th className="text-right py-3 px-4 text-gray-900 dark:text-white">Price</th>
-                      <th className="text-center py-3 px-4 text-gray-900 dark:text-white">Action</th>
+                      <th className="text-left py-3 px-4 text-white">Set</th>
+                      <th className="text-left py-3 px-4 text-white">Set Name</th>
+                      <th className="text-left py-3 px-4 text-white">Card Name</th>
+                      <th className="text-left py-3 px-4 text-white">Collector #</th>
+                      <th className="text-left py-3 px-4 text-white">Rarity</th>
+                      <th className="text-right py-3 px-4 text-white">Price</th>
+                      <th className="text-center py-3 px-4 text-white">Action</th>
                     </tr>
                     </thead>
                     <tbody>
                     {filteredCards.length === 0 ? (
                         <tr key="empty-search-results">
-                          <td colSpan="7" className="py-8 text-center text-gray-600 dark:text-gray-400">
+                          <td colSpan="7" className="py-8 text-center text-white/70">
                             No cards match your search filter.
                           </td>
                         </tr>
@@ -740,7 +861,7 @@ const App = () => {
                                   className={`border-b border-gray-200 dark:border-gray-700 cursor-pointer
                                 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50
                                 ${selectedCard?.id === card.id
-                                      ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-600'
+                                      ? 'bg-foil/10 dark:bg-foil/10 border-foil'
                                       : ''
                                   }`}
                               >
@@ -758,16 +879,16 @@ const App = () => {
                                   )}
                                 </td>
                                 <td className="py-3 px-4">
-                        <span className="font-semibold text-gray-900 dark:text-white">
+                        <span className="font-semibold text-white">
                           {card.set_name || 'Unknown Set'}
                         </span>
                                 </td>
                                 <td className="py-3 px-4">
-                        <span className="font-medium text-gray-900 dark:text-white">
+                        <span className="font-medium text-white">
                           {card.name}
                         </span>
                                 </td>
-                                <td className="py-3 px-4 text-gray-700 dark:text-gray-300">
+                                <td className="py-3 px-4 text-white">
                                   {card.collector_number || '—'}
                                 </td>
                                 <td className="py-3 px-4">
@@ -782,11 +903,11 @@ const App = () => {
                                 </td>
                                 <td className="py-3 px-4 text-right">
                                   {card.prices?.usd ? (
-                                      <span className="font-semibold text-blue-600 dark:text-blue-400">
+                                      <span className="font-semibold text-ledger">
                             ${card.prices.usd}
                           </span>
                                   ) : (
-                                      <span className="text-gray-400 dark:text-gray-500">—</span>
+                                      <span className="text-white/50">—</span>
                                   )}
                                 </td>
                                 <td className="py-3 px-4 text-center">
@@ -795,8 +916,8 @@ const App = () => {
                                         e.stopPropagation();
                                         addToLibrary(card);
                                       }}
-                                      className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg 
-                                   font-medium transition-colors text-sm"
+                                      className="px-4 py-2 bg-foil hover:bg-foil-dark text-ink font-semibold rounded-lg 
+                                   transition-colors text-sm"
                                   >
                                     Add to Library
                                   </button>
@@ -813,29 +934,66 @@ const App = () => {
 
           {/* Library Display */}
           {showLibrary && (
-              <div className="mt-8 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-                <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">
+              <div className="mt-8 bg-white dark:bg-ink-light rounded-lg shadow-lg p-6">
+                <h2 className="text-2xl font-bold mb-4 text-white">
                   Your Library
                 </h2>
                 {library.length === 0 ? (
-                    <p className="text-gray-600 dark:text-gray-400 text-center py-8">
+                    <p className="text-white/70 text-center py-8">
                       Your library is empty. Search for cards and add them to get started!
                     </p>
+                ) : selectedSet === null ? (
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                      {librarySets.map(set => (
+                          <button
+                              key={set.setName}
+                              onClick={() => openSet(set.setName)}
+                              className="flex flex-col items-center text-center p-4 rounded-lg border border-white/15 hover:border-foil transition-colors group"
+                          >
+                            {set.setCode && (
+                                <img
+                                    src={`https://svgs.scryfall.io/sets/${set.setCode.toLowerCase()}.svg`}
+                                    alt=""
+                                    className="w-10 h-10 mb-2 dark:invert"
+                                    onError={(e) => { e.target.style.display = 'none'; }}
+                                />
+                            )}
+                            <h3 className="font-bold text-white mb-0.5 group-hover:text-foil transition-colors">{set.setName}</h3>
+                            <p className="text-xs text-white/60 mb-1">
+                              {set.releasedAt ? formatSetDate(set.releasedAt) : 'Release date unknown'}
+                            </p>
+                            <p className="text-sm text-white/70">
+                              {set.cardCount} card{set.cardCount !== 1 ? 's' : ''} · {set.totalQuantity} total
+                            </p>
+                            <p className="text-lg font-semibold text-ledger mt-2">${set.totalValue.toFixed(2)}</p>
+                          </button>
+                      ))}
+                    </div>
                 ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full">
-                        <thead>
-                        <tr className="border-b border-gray-300 dark:border-gray-600">
-                          <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Card</th>
-                          <th className="text-left py-3 px-4 text-gray-900 dark:text-white">Set</th>
-                          <th className="text-right py-3 px-4 text-gray-900 dark:text-white">Price</th>
-                          <th className="text-right py-3 px-4 text-gray-900 dark:text-white">Quantity</th>
-                          <th className="text-right py-3 px-4 text-gray-900 dark:text-white">Total</th>
-                          <th className="text-center py-3 px-4 text-gray-900 dark:text-white">Actions</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {[...library]
+                    <div>
+                      <button
+                          onClick={() => setSelectedSet(null)}
+                          className="mb-4 px-3 py-1.5 bg-ink/10 dark:bg-white/10 hover:bg-ink/20 dark:hover:bg-white/20 text-ink dark:text-white rounded-lg text-sm font-medium transition-colors"
+                      >
+                        ← All Sets
+                      </button>
+                      <h3 className="text-xl font-bold mb-4 text-white flex items-center gap-3">
+                        {(() => {
+                          const activeSet = librarySets.find(s => s.setName === selectedSet);
+                          return activeSet?.setCode ? (
+                              <img
+                                  src={`https://svgs.scryfall.io/sets/${activeSet.setCode.toLowerCase()}.svg`}
+                                  alt=""
+                                  className="w-7 h-7 dark:invert"
+                                  onError={(e) => { e.target.style.display = 'none'; }}
+                              />
+                          ) : null;
+                        })()}
+                        {selectedSet}
+                      </h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                        {library
+                            .filter(item => (item.set_name || 'Unknown Set') === selectedSet)
                             .sort((a, b) => {
                               // Sort by dateAdded (most recent first)
                               // If no dateAdded, treat as very old (will appear at bottom)
@@ -846,72 +1004,51 @@ const App = () => {
                             .map((item, index) => {
                               // Ensure unique key
                               const uniqueKey = item.id || `library-item-${index}-${item.name || ''}-${item.set_name || ''}`;
+                              const img = item.image_uris?.normal || item.image_uris?.small;
                               return (
-                                  <tr key={uniqueKey} className="border-b border-gray-200 dark:border-gray-700">
-                                    <td className="py-3 px-4">
-                                      <div className="flex items-center gap-3">
-                                        {item.image_uris?.small && (
-                                            <img
-                                                src={item.image_uris.small}
-                                                alt={item.name}
-                                                className="w-12 h-16 object-cover rounded"
-                                            />
-                                        )}
-                                        <div className="flex flex-col">
-                              <span className="font-medium text-gray-900 dark:text-white">
-                                {item.name}
-                              </span>
-                                          {item.isFoil && (
-                                              <span className="text-xs text-yellow-600 dark:text-yellow-400 font-semibold">
-                                  ✨ Foil
-                                </span>
-                                          )}
+                                  <div key={uniqueKey} className="flex flex-col items-center">
+                                    {img ? (
+                                        <img
+                                            src={img}
+                                            alt={item.name}
+                                            className="w-full rounded-lg shadow-lg"
+                                        />
+                                    ) : (
+                                        <div className="w-full aspect-[5/7] rounded-lg bg-ink-light flex items-center justify-center p-2 text-center">
+                                          <span className="text-white/60 text-sm">{item.name}</span>
                                         </div>
-                                      </div>
-                                    </td>
-                                    <td className="py-3 px-4 text-gray-700 dark:text-gray-300">
-                                      {item.set_name} {item.collector_number && `#${item.collector_number}`}
-                                    </td>
-                                    <td className="py-3 px-4 text-right text-gray-700 dark:text-gray-300">
-                                      ${(item.price || 0).toFixed(2)}
-                                    </td>
-                                    <td className="py-3 px-4">
+                                    )}
+                                    {item.isFoil && (
+                                        <span className="mt-1 text-xs text-foil font-semibold">✨ Foil</span>
+                                    )}
+                                    <div className="mt-2 flex items-center gap-2">
                                       <input
                                           type="number"
                                           min="0"
                                           value={item.quantity}
                                           onChange={(e) => updateQuantity(item.id, parseInt(e.target.value) || 0)}
-                                          className="w-20 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded 
-                                     bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right"
+                                          className="w-14 px-1 py-1 border border-gray-300 dark:border-gray-600 rounded 
+                                     bg-white dark:bg-ink-light text-white text-center text-sm"
                                       />
-                                    </td>
-                                    <td className="py-3 px-4 text-right font-semibold text-gray-900 dark:text-white">
-                                      ${(item.totalValue || 0).toFixed(2)}
-                                    </td>
-                                    <td className="py-3 px-4 text-center">
-                                      <button
-                                          onClick={() => removeFromLibrary(item.id)}
-                                          className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm transition-colors"
-                                      >
-                                        Remove
-                                      </button>
-                                    </td>
-                                  </tr>
+                                      <span className="text-ledger font-semibold text-sm">${(item.totalValue || 0).toFixed(2)}</span>
+                                    </div>
+                                    <button
+                                        onClick={() => removeFromLibrary(item.id)}
+                                        className="mt-1 text-xs text-ember hover:text-ember/80 transition-colors"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
                               );
                             })}
-                        </tbody>
-                        <tfoot>
-                        <tr className="border-t-2 border-gray-400 dark:border-gray-500">
-                          <td colSpan="4" className="py-3 px-4 text-right font-bold text-gray-900 dark:text-white">
-                            Grand Total:
-                          </td>
-                          <td className="py-3 px-4 text-right font-bold text-xl text-blue-600 dark:text-blue-400">
-                            ${calculateTotalValue()}
-                          </td>
-                          <td></td>
-                        </tr>
-                        </tfoot>
-                      </table>
+                      </div>
+
+                      <div className="mt-6 text-right">
+                        <span className="text-lg font-bold text-white">Set Total: </span>
+                        <span className="text-xl font-bold text-ledger">
+                          ${library.filter(item => (item.set_name || 'Unknown Set') === selectedSet).reduce((sum, item) => sum + (item.totalValue || 0), 0).toFixed(2)}
+                        </span>
+                      </div>
                     </div>
                 )}
               </div>
