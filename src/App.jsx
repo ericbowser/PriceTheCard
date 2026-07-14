@@ -14,6 +14,8 @@ const App = () => {
   const [filterQuery, setFilterQuery] = useState("");
   const [isFoil, setIsFoil] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [zoomed, setZoomed] = useState(false);
+  const [zoomedImg, setZoomedImg] = useState(null);
 
   const searchInputRef = useRef(null);
   const selectedCardRef = useRef(null);
@@ -46,10 +48,16 @@ const App = () => {
         e.preventDefault();
         searchInputRef.current?.focus();
       }
-      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
-        setCardName("");
-        setCards([]);
-        setSelectedCard(null);
+      if (e.key === 'Escape') {
+        if (zoomedImg) {
+          setZoomedImg(null);
+        } else if (zoomed) {
+          setZoomed(false);
+        } else if (document.activeElement === searchInputRef.current) {
+          setCardName("");
+          setCards([]);
+          setSelectedCard(null);
+        }
       }
     };
 
@@ -618,6 +626,15 @@ const App = () => {
     reader.readAsText(file);
   };
 
+  const clearLibrary = () => {
+    if (!window.confirm('Clear your entire library? This cannot be undone.')) return;
+    localStorage.removeItem('mtgLibrary');
+    setLibrary([]);
+    setSelectedSet(null);
+    setShowLibrary(false);
+    setSuccessMessage('Library cleared. Start fresh!');
+  };
+
   return (
       <div className="min-h-screen bg-parchment dark:bg-ink py-8 px-4">
         <div className="max-w-6xl mx-auto">
@@ -666,6 +683,13 @@ const App = () => {
               >
                 Export CSV
               </button>
+              <button
+                  onClick={clearLibrary}
+                  disabled={library.length === 0}
+                  className="px-4 py-2 bg-ember/20 hover:bg-ember/40 disabled:opacity-40 text-ember rounded-lg font-medium transition-colors"
+              >
+                Clear Library
+              </button>
             </div>
           </div>
 
@@ -701,12 +725,42 @@ const App = () => {
               <div ref={selectedCardRef} className="mb-6 bg-white dark:bg-ink-light rounded-lg shadow-lg p-6">
                 <div className="grid md:grid-cols-2 gap-6">
                   {selectedCard.image_uris?.normal && (
-                      <div>
+                      <div className="relative group">
                         <img
                             src={selectedCard.image_uris.normal}
                             alt={selectedCard.name}
                             className="w-full rounded-lg shadow-md"
                         />
+                        <button
+                            onClick={() => setZoomed(true)}
+                            className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full w-9 h-9 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-lg"
+                            title="Enlarge card"
+                        >
+                          🔍
+                        </button>
+                      </div>
+                  )}
+
+                  {/* Zoom Modal */}
+                  {zoomed && selectedCard.image_uris && (
+                      <div
+                          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+                          onClick={() => setZoomed(false)}
+                      >
+                        <div className="relative max-h-screen p-4" onClick={(e) => e.stopPropagation()}>
+                          <img
+                              src={selectedCard.image_uris.large || selectedCard.image_uris.normal}
+                              alt={selectedCard.name}
+                              className="max-h-[90vh] rounded-xl shadow-2xl"
+                          />
+                          <button
+                              onClick={() => setZoomed(false)}
+                              className="absolute top-2 right-2 bg-black/70 hover:bg-black text-white rounded-full w-9 h-9 flex items-center justify-center text-xl font-bold"
+                              title="Close"
+                          >
+                            ✕
+                          </button>
+                        </div>
                       </div>
                   )}
                   <div>
@@ -871,6 +925,7 @@ const App = () => {
                                           src={`https://svgs.scryfall.io/sets/${card.set.toLowerCase()}.svg`}
                                           alt={card.set_name || card.set}
                                           className="w-10 h-10 object-contain"
+                                          style={{ filter: 'invert(45%) sepia(89%) saturate(700%) hue-rotate(240deg) brightness(1.1)' }}
                                           onError={(e) => {
                                             // Fallback if set emblem doesn't exist
                                             e.target.style.display = 'none';
@@ -954,7 +1009,8 @@ const App = () => {
                                 <img
                                     src={`https://svgs.scryfall.io/sets/${set.setCode.toLowerCase()}.svg`}
                                     alt=""
-                                    className="w-10 h-10 mb-2 dark:invert"
+                                    className="w-10 h-10 mb-2"
+                                    style={{ filter: 'invert(45%) sepia(89%) saturate(700%) hue-rotate(240deg) brightness(1.1)' }}
                                     onError={(e) => { e.target.style.display = 'none'; }}
                                 />
                             )}
@@ -984,7 +1040,8 @@ const App = () => {
                               <img
                                   src={`https://svgs.scryfall.io/sets/${activeSet.setCode.toLowerCase()}.svg`}
                                   alt=""
-                                  className="w-7 h-7 dark:invert"
+                                  className="w-7 h-7"
+                                  style={{ filter: 'invert(45%) sepia(89%) saturate(700%) hue-rotate(240deg) brightness(1.1)' }}
                                   onError={(e) => { e.target.style.display = 'none'; }}
                               />
                           ) : null;
@@ -1005,14 +1062,24 @@ const App = () => {
                               // Ensure unique key
                               const uniqueKey = item.id || `library-item-${index}-${item.name || ''}-${item.set_name || ''}`;
                               const img = item.image_uris?.normal || item.image_uris?.small;
+                              const largeImg = img ? img.replace('/normal/', '/large/') : null;
                               return (
                                   <div key={uniqueKey} className="flex flex-col items-center">
                                     {img ? (
-                                        <img
-                                            src={img}
-                                            alt={item.name}
-                                            className="w-full rounded-lg shadow-lg"
-                                        />
+                                        <div className="relative group w-full">
+                                          <img
+                                              src={img}
+                                              alt={item.name}
+                                              className="w-full rounded-lg shadow-lg"
+                                          />
+                                          <button
+                                              onClick={() => setZoomedImg(largeImg || img)}
+                                              className="absolute top-1 right-1 bg-black/60 hover:bg-black/80 text-white rounded-full w-7 h-7 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-sm"
+                                              title="Enlarge"
+                                          >
+                                            🔍
+                                          </button>
+                                        </div>
                                     ) : (
                                         <div className="w-full aspect-[5/7] rounded-lg bg-ink-light flex items-center justify-center p-2 text-center">
                                           <span className="text-white/60 text-sm">{item.name}</span>
@@ -1042,6 +1109,28 @@ const App = () => {
                               );
                             })}
                       </div>
+
+                      {/* Library card zoom modal */}
+                      {zoomedImg && (
+                          <div
+                              className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+                              onClick={() => setZoomedImg(null)}
+                          >
+                            <div className="relative p-4" onClick={(e) => e.stopPropagation()}>
+                              <img
+                                  src={zoomedImg}
+                                  alt="Card zoom"
+                                  className="max-h-[90vh] rounded-xl shadow-2xl"
+                              />
+                              <button
+                                  onClick={() => setZoomedImg(null)}
+                                  className="absolute top-2 right-2 bg-black/70 hover:bg-black text-white rounded-full w-9 h-9 flex items-center justify-center text-xl font-bold"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                      )}
 
                       <div className="mt-6 text-right">
                         <span className="text-lg font-bold text-white">Set Total: </span>
